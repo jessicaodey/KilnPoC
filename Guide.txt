@@ -1,6 +1,6 @@
 this is the guide
 
-we are already in a new forge project. we will use the TestPoC.t.sol file in the test folder to write the test.
+we are already in a new forge project. we will use the empty TestPoC.t.sol file in the test folder to write the test.
 I believe Kiln staking contract is vulnerable to the beacon Deposit vulnerability.
 Our goal is to show that using Foundry with mainnet fork.
 Follow the code rules strictly.

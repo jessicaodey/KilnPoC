@@ -1,0 +1,114 @@
+To main content
+BlogAbout Us[ Work With Us ]AuditResearchСareersReports
+
+
+Homepage
+Audit
+Research
+Reports
+About Us
+Careers
+Blog
+[ Work With Us ]
+   
+Privacy policy
+Terms of Service
+Mediakit
+© 2024 MixBytes()
+Ethereum Liquid Staking: Validator Deposit Risks
+& Mitigation
+Author(s): Ilya Teterin, Dmitry Zakharov
+Security researcher(s) at MixBytes
+
+Overview
+Ethereum liquid staking architecture has a non-obvious nuance that can inadvertently cause protocol developers to overlook crucial safeguards, potentially leading to the theft of user funds. This article explains this issue clearly and outlines practical measures for mitigating the associated risks.
+A Risky Feature in Deposit and Withdrawal Operations
+For those unfamiliar with the deposit process, here’s a technical overview: When a deposit is made, a user submits a transaction to the beacon deposit contract that includes critical data such as the validator’s public key (48 bytes), withdrawal credentials (32 bytes), deposit signature (96 bytes), and the deposit amount in ETH. The contract verifies the signature and incorporates the deposit into a Merkle tree structure, updating the deposit_root and incrementing the deposit_count, thus creating a tamper-evident on-chain record.
+
+Two specific points should be emphasized:
+
+Multiple deposits can be made to a single validator, with each deposit combined into a cumulative balance actively staked.
+When funds are withdrawn from staking, the destination address is specified by the withdrawal credentials provided at the time of deposit.
+
+A critical question arises when multiple deposits with different withdrawal credentials, potentially belonging to different users, are sent to the same validator. This scenario creates a situation where deposits associated with different withdrawal credentials, along with their staking rewards, become pooled together under a single validator. The pressing question is: whose withdrawal credentials will ultimately receive the withdrawn funds?
+
+While one might assume different mechanisms to control withdrawal access—such as a share-based pool or a policy enforced directly at the beacon deposit contract—the current Ethereum implementation simply uses the withdrawal credentials from the first-ever deposit, disregarding all subsequent ones.
+
+The implications can be troubling. An attacker, anticipating someone else’s upcoming deposit to a specific validator, can front-run by initiating a minimal deposit with their own withdrawal credentials. Consequently, the attacker gains control over all subsequent deposits made to that validator, effectively stealing the user’s funds by later withdrawing them to an address the attacker controls, leaving the original depositor with nothing.
+
+To exploit this vulnerability, the attacker must be able to sign validator-related data. If the attacker is also the validator’s creator, meeting this requirement is straightforward and poses no challenge.
+
+Even if the attacker isn’t the original creator of the validator, the attack cannot be entirely ruled out and should still be considered when evaluating risks. For instance, the validator might be operated by a service providing an API that allows authorized users to request validator signatures for deposit and withdrawal operations.
+How Can We Defend Against This?
+1. Private Mempools / MEV
+A scenario where an attacker anticipates an event and submits a transaction that executes earlier, enabling actions unintended by the system's developers, is generally classified as a front-run attack.
+
+Typically, front-run attacks can be mitigated using private mempools or MEV solutions, as they hide the transaction from potential attackers, preventing them from anticipating and exploiting it.
+
+However, in this specific case, these measures are entirely ineffective. The attacker, who originally created the validator, inevitably becomes aware of any user’s intent to deposit because the validator’s signature is explicitly required—therefore, the attacker does not even need to monitor transactions in the mempool.
+
+Verdict: Completely ineffective
+2. Avoid Using Third-Party Validators
+When validators are managed directly by the liquid staking protocol itself or by closely affiliated parties, relying on their honesty and proper behavior does not introduce substantial additional risks. While this might appear to contradict the principles of decentralization and trustlessness, liquid staking protocols inherently involve a certain level of trust.
+
+From this standpoint, trusting validators controlled by the protocol is generally reasonable, as administrators inclined towards malicious behavior—if such actors were indeed to emerge—would likely prefer simpler ways of misappropriating user funds, rather than pursuing this more complex attack scenario.
+
+It is also crucial to ensure that validators never provide potential attackers with the ability to request validator signatures for deposits. Ideally, validators should avoid exposing any APIs or interfaces to external users altogether.
+
+Verdict: Practically reliable
+3. Verifying deposit_root via Beacon Deposit Contract
+Unfortunately, the beacon deposit contract doesn't allow on-chain verification to determine whether a deposit is the very first one to a validator. However, it is possible to monitor deposit events on-chain using the get_deposit_root() or get_deposit_count() methods, as these values change with each deposit transaction.
+
+By creating an off-chain infrastructure that monitors deposit events (such as through DepositEvent logs), developers can ensure that no deposits exist for a given validator. Once this state is verified, developers can quickly submit a deposit transaction that includes a safeguard to revert if the deposit_root changes during the transaction's confirmation period:
+bytes32 actualRoot = depositContract.get_deposit_root();
+if (expectedDepositRoot != actualRoot) {
+    revert InvalidDepositRoot(actualRoot, expectedDepositRoot);
+}
+Here, the expectedDepositRoot is determined by off-chain infrastructure when the state is confirmed to be safe (i.e., no attack has occurred). If an attacker attempts to front-run the deposit, the deposit_root would change, causing the transaction to revert.
+
+However, this approach has its drawbacks. Currently, the likelihood of false reverts due to unrelated deposits made by uncoordinated liquid staking projects is relatively high. On average, there are around 2000 deposit transactions per day on the Ethereum beacon chain. Given that Ethereum produces a new block approximately every 12 seconds, this results in 7,200 blocks per day. Therefore, the probability that at least one deposit occurs in a given block (and the deposit_root changes) is approximately 25%.
+
+This scenario would result in occasional false positives, requiring transaction retries. Developers might consider this when optimizing their code—for example, by performing the deposit_root check as early as possible in the transaction to minimize gas costs associated with unnecessary computation.
+
+The deposit_root check protects against external front-running attacks by reverting the transaction if the deposit state changes unexpectedly. However, it does not prevent the deposit caller themselves from executing a malicious deposit, since they control the transaction timing and contents. To mitigate this insider risk, a multisig approval scheme can be introduced, requiring multiple independent parties to agree on the expectedDepositRoot before a deposit is submitted—thereby distributing trust and reducing the potential for unilateral actions.
+
+Verdict: Reliable but operationally complex
+4. Preemptive Minimal Deposit at Validator Creation
+Another effective way to defend against the attack is to perform a minimal deposit (1 ETH) immediately when creating a validator. Since the withdrawal credentials are permanently set by the very first deposit, sending this preemptive deposit ensures that the correct credentials are locked in from the start and cannot be overwritten by a malicious actor.
+
+Even if someone later attempts to deposit using different withdrawal credentials, they will have no effect—only the credentials from the first deposit are used for future withdrawals.
+
+The main downside of this approach is its capital inefficiency. The initial 1 ETH deposit remains idle and does not begin earning staking rewards until the full 32 ETH required for validator activation is reached. This can lead to delays in bringing the validator online, especially in cases where user deposits come in gradually.
+
+Nevertheless, if a project is willing to sacrifice capital efficiency for stronger safety guarantees—especially in early stages or when managing a small number of validators—this method is a solid and straightforward solution.
+
+Verdict: Reliable, but capital-inefficient
+5. Protocol-Level Fix
+Since the root of the issue lies in Ethereum’s core architecture—specifically in how the beacon chain handles validator deposits and withdrawal credentials—a long-term and robust solution would require changes to the Ethereum protocol itself.
+
+Such a protocol-level fix could involve modifying the deposit contract or validator registry logic to allow for per-deposit withdrawal credentials, or to enforce stricter rules around validator initialization.
+
+However, although this problem has been known since at least 2021, no fix has been implemented as of the time of writing (2025). This suggests that resolving it is not currently a high priority for Ethereum core developers, likely due to the complexity involved and the relatively limited scope of impact compared to other protocol challenges.
+
+Verdict: Theoretically ideal, but unavailable in practice
+Conclusion
+In practice, liquid staking protocols today primarily rely on two approaches: avoiding third-party validators (Approach #2) and verifying deposit_root off-chain before submitting a deposit (Approach #3), sometimes even without additional decentralization safeguards.
+
+The preemptive minimal deposit strategy (Approach #4), while reliable from a security standpoint, is generally avoided in real-world implementations due to concerns over capital efficiency—projects are reluctant to lock funds in idle validators awaiting full activation.
+
+The MEV/private mempool option (Approach #1) is included in this article not as a viable defense, but specifically to highlight that it does not work in this context and should never be relied upon.
+
+Finally, although the most elegant solution would be a protocol-level fix (Approach #5), the fact that this issue remains unresolved since its identification in 2021 suggests that it is not a current priority for Ethereum core development.
+Who is MixBytes?
+MixBytes is a team of expert blockchain auditors and security researchers specializing in providing comprehensive smart contract audits and technical advisory services for EVM-compatible and Substrate-based projects. Join us on X to stay up-to-date with the latest industry trends and insights.
+Disclaimer
+The information contained in this Website is for educational and informational purposes only and shall not be understood or construed as financial or investment advice.
+Other posts
+Research    Apr 07, 2025
+This article explores the architectural nuances of Ethereum liquid staking protocols that can create security vulnerabilities, potentially exposing user funds to theft, and provides actionable steps to mitigate validator deposit risks.
+Research    Mar 18, 2025
+The article dives into the technical architecture of the F(x) Protocol 2.0 and fxUSD stablecoin. It explores the stabilization mechanisms, key design choices, and unique features that ensure reliability and resilience of fxUSD in dynamic market conditions.
+Research    Feb 25, 2025
+The article provides a detailed exploration of the architecture, design principles, and implementation details behind the M^0 Protocol and M stablecoin. It focuses on the technical components that enable the stability and security of this protocol, bridging traditional finance and DeFi.
+[ View All Articles ]
+© 2025 MixBytes ( )hello@mixbytes.ioPrivacy policyTerms of ServiceMediakit
